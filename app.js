@@ -20,6 +20,21 @@ let humChart = null;
 const BLUETOOTH_SERVICE_UUID = '00001101-0000-1000-8000-00805f9b34fb';
 const BLUETOOTH_CHARACTERISTIC_UUID = '00001142-0000-1000-8000-00805f9b34fb';
 
+// Alternative UUIDs for different HC-05 configurations
+const ALTERNATIVE_SERVICE_UUIDS = [
+    '00001101-0000-1000-8000-00805f9b34fb',  // Standard SPP
+    '0000180f-0000-1000-8000-00805f9b34fb',  // Battery Service (sometimes used)
+    '0000180a-0000-1000-8000-00805f9b34fb',  // Device Information Service
+    '00001812-0000-1000-8000-00805f9b34fb'   // Human Interface Device
+];
+
+const ALTERNATIVE_CHARACTERISTIC_UUIDS = [
+    '00001142-0000-1000-8000-00805f9b34fb',  // Standard SPP
+    '00002a19-0000-1000-8000-00805f9b34fb',  // Battery Level
+    '00002a29-0000-1000-8000-00805f9b34fb',  // Manufacturer Name
+    '00002a37-0000-1000-8000-00805f9b34fb'   // Heart Rate Measurement
+];
+
 // Initialize charts
 function initCharts() {
     const tempCtx = document.getElementById('tempChart').getContext('2d');
@@ -137,20 +152,59 @@ async function connectBluetooth() {
     try {
         console.log('Requesting Bluetooth device...');
         
-        // Request Bluetooth device
+        // Request Bluetooth device with all possible services
         bluetoothDevice = await navigator.bluetooth.requestDevice({
             acceptAllDevices: true,
-            optionalServices: [BLUETOOTH_SERVICE_UUID]
+            optionalServices: ALTERNATIVE_SERVICE_UUIDS
         });
 
         console.log('Connecting to GATT server...');
         bluetoothServer = await bluetoothDevice.gatt.connect();
 
-        console.log('Getting service...');
-        bluetoothService = await bluetoothServer.getPrimaryService(BLUETOOTH_SERVICE_UUID);
+        console.log('Discovering services...');
+        const services = await bluetoothServer.getPrimaryServices();
+        console.log('Available services:', services.map(s => s.uuid));
 
-        console.log('Getting characteristic...');
-        bluetoothCharacteristic = await bluetoothService.getCharacteristic(BLUETOOTH_CHARACTERISTIC_UUID);
+        // Try to find a compatible service
+        let targetService = null;
+        let targetCharacteristic = null;
+
+        for (const service of services) {
+            console.log('Checking service:', service.uuid);
+            
+            // Try each characteristic UUID for this service
+            for (const charUuid of ALTERNATIVE_CHARACTERISTIC_UUIDS) {
+                try {
+                    const characteristic = await service.getCharacteristic(charUuid);
+                    console.log('Found characteristic:', charUuid);
+                    targetService = service;
+                    targetCharacteristic = characteristic;
+                    break;
+                } catch (e) {
+                    // Characteristic not found, try next
+                    continue;
+                }
+            }
+            
+            if (targetCharacteristic) break;
+        }
+
+        if (!targetCharacteristic) {
+            // If no specific characteristic found, try to get any characteristic
+            console.log('Trying to get any characteristic from first service...');
+            const characteristics = await services[0].getCharacteristics();
+            if (characteristics.length > 0) {
+                targetCharacteristic = characteristics[0];
+                console.log('Using first available characteristic:', targetCharacteristic.uuid);
+            }
+        }
+
+        if (!targetCharacteristic) {
+            throw new Error('No compatible Bluetooth characteristic found. Make sure HC-05 is properly configured.');
+        }
+
+        bluetoothService = targetService;
+        bluetoothCharacteristic = targetCharacteristic;
 
         // Start notifications
         await bluetoothCharacteristic.startNotifications();
@@ -169,7 +223,13 @@ async function connectBluetooth() {
         
     } catch (error) {
         console.error('Bluetooth connection error:', error);
-        alert('Failed to connect: ' + error.message);
+        let errorMessage = error.message;
+        
+        if (errorMessage.includes('No Services matching UUID')) {
+            errorMessage = 'HC-05 not found or not paired. Please:\n1. Make sure HC-05 is powered and blinking\n2. Pair HC-05 with your device first\n3. Try again';
+        }
+        
+        alert('Failed to connect: ' + errorMessage);
         updateConnectionStatus(false);
     }
 }
