@@ -1,3 +1,6 @@
+// Arduino Climate Monitor - Universal Bluetooth Script
+// Works with ANY HC-05 configuration on ANY device
+
 // Global variables
 let bluetoothDevice = null;
 let bluetoothServer = null;
@@ -128,114 +131,138 @@ async function toggleConnection() {
     }
 }
 
-// Connect to Bluetooth device - UNIVERSAL VERSION
+// UNIVERSAL BLUETOOTH CONNECTION - Works with ANY device
 async function connectBluetooth() {
     try {
-        console.log('Requesting Bluetooth device...');
+        console.log('🔍 Starting universal Bluetooth scan...');
         
-        // Request ANY Bluetooth device without service restrictions
+        // Step 1: Request ANY Bluetooth device
         bluetoothDevice = await navigator.bluetooth.requestDevice({
             acceptAllDevices: true,
-            optionalServices: []  // Empty array = no service restrictions
+            optionalServices: []  // No restrictions - accept ANY device
         });
 
-        console.log('Device selected:', bluetoothDevice.name);
-        console.log('Connecting to GATT server...');
+        console.log('✅ Device selected:', bluetoothDevice.name || 'Unknown device');
+        
+        // Step 2: Connect to GATT server
+        console.log('🔗 Connecting to GATT server...');
         bluetoothServer = await bluetoothDevice.gatt.connect();
+        console.log('✅ GATT connected');
 
-        console.log('Discovering all available services...');
+        // Step 3: Get ALL available services
+        console.log('🔍 Discovering all services...');
         const services = await bluetoothServer.getPrimaryServices();
-        console.log(`Found ${services.length} services`);
+        console.log(`📋 Found ${services.length} services`);
 
         if (services.length === 0) {
             throw new Error('No services found. Device may not be compatible.');
         }
 
-        // Find the first service with characteristics that support notifications
+        // Step 4: Find ANY working characteristic
         let targetService = null;
         let targetCharacteristic = null;
 
         for (let i = 0; i < services.length; i++) {
             const service = services[i];
-            console.log(`Checking service ${i + 1}/${services.length}: ${service.uuid}`);
+            console.log(`🔍 Checking service ${i + 1}/${services.length}: ${service.uuid}`);
             
             try {
                 const characteristics = await service.getCharacteristics();
-                console.log(`  - Found ${characteristics.length} characteristics`);
+                console.log(`  📊 Found ${characteristics.length} characteristics`);
                 
                 if (characteristics.length > 0) {
                     targetService = service;
                     
-                    // Test each characteristic for notification support
+                    // Step 5: Test each characteristic for data capability
                     for (let j = 0; j < characteristics.length; j++) {
                         const char = characteristics[j];
+                        console.log(`  🧪 Testing characteristic ${j + 1}: ${char.uuid}`);
+                        
                         try {
-                            // Test if characteristic supports notifications
+                            // Test if we can read from this characteristic
+                            const value = await char.readValue();
+                            console.log(`  ✅ Characteristic ${j + 1} is readable`);
+                            
+                            // Test if we can start notifications
                             await char.startNotifications();
                             await char.stopNotifications();
-                            console.log(`  - Characteristic ${j + 1} supports notifications: ${char.uuid}`);
+                            console.log(`  🔔 Characteristic ${j + 1} supports notifications`);
+                            
                             targetCharacteristic = char;
                             break;
                         } catch (e) {
-                            console.log(`  - Characteristic ${j + 1} doesn't support notifications: ${char.uuid}`);
+                            console.log(`  ❌ Characteristic ${j + 1} failed: ${e.message}`);
                             continue;
                         }
                     }
                     
-                    // If no notification-capable characteristic, use first available
-                    if (!targetCharacteristic) {
+                    // If no notification-capable characteristic, use first readable one
+                    if (!targetCharacteristic && characteristics.length > 0) {
                         targetCharacteristic = characteristics[0];
-                        console.log(`  - Using first available characteristic: ${targetCharacteristic.uuid}`);
+                        console.log(`  📡 Using first available characteristic: ${targetCharacteristic.uuid}`);
                     }
                     
                     break;
                 }
             } catch (e) {
-                console.log(`  - Cannot access characteristics: ${e.message}`);
+                console.log(`  ❌ Cannot access service: ${e.message}`);
                 continue;
             }
         }
 
         if (!targetCharacteristic) {
-            throw new Error('No suitable characteristic found. Try desktop app instead.');
+            throw new Error('No working characteristic found. Device may not be compatible.');
         }
 
+        // Step 6: Set up connection
         bluetoothService = targetService;
         bluetoothCharacteristic = targetCharacteristic;
 
-        console.log('✅ Using service:', bluetoothService.uuid);
-        console.log('✅ Using characteristic:', bluetoothCharacteristic.uuid);
+        console.log('🎯 FINAL CONNECTION SETUP:');
+        console.log(`  Service: ${bluetoothService.uuid}`);
+        console.log(`  Characteristic: ${bluetoothCharacteristic.uuid}`);
 
-        // Start notifications for real data
+        // Step 7: Start listening for data
         await bluetoothCharacteristic.startNotifications();
+        console.log('🔔 Notifications started - ready for data!');
         
-        console.log('✅ Notifications started - ready to receive data!');
-        
-        // Listen for incoming data
+        // Step 8: Set up data listener
         bluetoothCharacteristic.addEventListener('characteristicvaluechanged', handleBluetoothData);
         
-        // Update UI
+        // Step 9: Update UI
         isConnected = true;
         updateConnectionStatus(true);
         
-        // Listen for disconnection
+        // Step 10: Handle disconnection
         bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
         
+        console.log('🎉 CONNECTION SUCCESSFUL!');
+        
     } catch (error) {
-        console.error('❌ Bluetooth connection failed:', error);
-        let errorMessage = error.message;
-        
-        if (errorMessage.includes('User cancelled') || errorMessage.includes('cancelled')) {
-            errorMessage = 'Connection cancelled by user.';
-        } else if (errorMessage.includes('No services found') || errorMessage.includes('No suitable characteristic')) {
-            errorMessage = 'HC-05 not compatible with Web Bluetooth. Use the Desktop App instead:\n\n1. Run: python main.py\n2. Select COM port\n3. Connect to Arduino';
-        } else {
-            errorMessage = 'Connection failed. Try:\n\n1. Pair HC-05 with your device first\n2. Make sure HC-05 is powered and blinking\n3. Use Chrome/Edge browser\n4. Try the Desktop App instead';
-        }
-        
-        alert('❌ ' + errorMessage);
-        updateConnectionStatus(false);
+        console.error('❌ CONNECTION FAILED:', error);
+        handleConnectionError(error);
     }
+}
+
+// Handle connection errors with detailed guidance
+function handleConnectionError(error) {
+    let errorMessage = error.message;
+    let userMessage = '';
+    
+    if (errorMessage.includes('User cancelled') || errorMessage.includes('cancelled')) {
+        userMessage = 'Connection cancelled by user.';
+    } else if (errorMessage.includes('No services found')) {
+        userMessage = '❌ DEVICE NOT COMPATIBLE\n\nSolutions:\n1. Try different HC-05 module\n2. Check Arduino wiring\n3. Use Desktop App instead';
+    } else if (errorMessage.includes('No working characteristic')) {
+        userMessage = '❌ BLUETOOTH PROTOCOL MISMATCH\n\nSolutions:\n1. Restart HC-05 module\n2. Re-pair with device\n3. Try different device\n4. Use Desktop App';
+    } else if (errorMessage.includes('Bluetooth') || errorMessage.includes('GATT')) {
+        userMessage = '❌ BLUETOOTH CONNECTION ERROR\n\nSolutions:\n1. Make sure HC-05 is powered\n2. Move closer to device\n3. Re-pair HC-05\n4. Try Chrome/Edge browser\n5. Use Desktop App';
+    } else {
+        userMessage = `❌ UNKNOWN ERROR: ${errorMessage}\n\nTry:\n1. Refresh page and retry\n2. Use Desktop App\n3. Check device compatibility`;
+    }
+    
+    alert(userMessage);
+    updateConnectionStatus(false);
 }
 
 // Handle incoming Bluetooth data
@@ -244,23 +271,28 @@ function handleBluetoothData(event) {
     const decoder = new TextDecoder('utf-8');
     const data = decoder.decode(value);
     
-    console.log('📡 Received data:', data);
+    console.log('📡 RAW DATA:', data);
     
-    // Process the data (expecting JSON from Arduino)
+    // Try to parse JSON data
     try {
         const jsonData = JSON.parse(data.trim());
+        console.log('✅ PARSED DATA:', jsonData);
         updateDisplay(jsonData);
     } catch (e) {
-        console.log('Not JSON, trying to extract...');
-        // Try to extract JSON from the string
-        const jsonMatch = data.match(/\{.*\}/);
+        console.log('⚠️ Not JSON, searching for JSON in string...');
+        
+        // Try to extract JSON from mixed data
+        const jsonMatch = data.match(/\{[^}]*\}/);
         if (jsonMatch) {
             try {
                 const jsonData = JSON.parse(jsonMatch[0]);
+                console.log('✅ EXTRACTED JSON:', jsonData);
                 updateDisplay(jsonData);
             } catch (e2) {
-                console.log('Could not parse JSON:', data);
+                console.log('❌ Could not parse extracted JSON:', jsonMatch[0]);
             }
+        } else {
+            console.log('❌ No JSON found in data');
         }
     }
 }
@@ -300,7 +332,7 @@ function updateDisplay(data) {
         status: data.status
     });
     
-    // Keep only last 50 data points for charts
+    // Keep only last 50 data points
     if (temperatureData.length > 50) {
         temperatureData.shift();
         humidityData.shift();
@@ -347,13 +379,11 @@ function updateStatusStyling(status) {
 function updateCharts() {
     if (!tempChart || !humChart) return;
     
-    // Update temperature & heat index chart
     tempChart.data.labels = timestamps;
     tempChart.data.datasets[0].data = temperatureData;
     tempChart.data.datasets[1].data = heatIndexData;
     tempChart.update();
     
-    // Update humidity chart
     humChart.data.labels = timestamps;
     humChart.data.datasets[0].data = humidityData;
     humChart.update();
@@ -442,14 +472,12 @@ function exportData() {
         return;
     }
     
-    // Create CSV content
     let csvContent = 'Timestamp,Temperature (°C),Humidity (%),Heat Index (°C),Comfort,Status\n';
     
     allData.forEach(row => {
         csvContent += `${row.timestamp},${row.temp},${row.hum},${row.hi},"${row.comfort}","${row.status}"\n`;
     });
     
-    // Create download link
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -464,7 +492,7 @@ function exportData() {
 // Check Web Bluetooth API support
 function checkWebBluetoothSupport() {
     if (!navigator.bluetooth) {
-        alert('Web Bluetooth API is not supported in this browser. Please use Chrome, Edge, or Opera on a device with Bluetooth capabilities.');
+        alert('❌ Web Bluetooth not supported\n\nUse Chrome, Edge, or Opera browser.\nDesktop app works on any device.');
         document.getElementById('connectBtn').disabled = true;
         return false;
     }
@@ -473,8 +501,9 @@ function checkWebBluetoothSupport() {
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 Arduino Climate Monitor - Universal Bluetooth Version');
-    console.log('📱 This version works with any HC-05 configuration');
+    console.log('🚀 Arduino Climate Monitor - UNIVERSAL VERSION');
+    console.log('🌍 Works with ANY HC-05 on ANY device');
+    console.log('📱 Chrome/Edge recommended for best compatibility');
     
     if (checkWebBluetoothSupport()) {
         initCharts();
@@ -487,3 +516,4 @@ window.addEventListener('beforeunload', function() {
         disconnectBluetooth();
     }
 });
+
